@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>FRN Wallet Sécurisé</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #f2f0ff;
+      --text: #2b044d;
+      --accent: #7209b7;
+      --accent-hover: #4f0a8c;
+      --box: #ffffff;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #121212;
+        --text: #eae6ff;
+        --accent: #bb86fc;
+        --accent-hover: #9f6fe2;
+        --box: #1e1e1e;
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 0;
+    }
+
+    header {
+      background-color: var(--accent);
+      color: white;
+      padding: 20px;
+      text-align: center;
+    }
+
+    h1, h2, h3 {
+      margin: 0 0 20px;
+    }
+
+    .container {
+      max-width: 480px;
+      margin: 20px auto;
+      padding: 20px;
+      background: var(--box);
+      border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+
+    input, button, textarea {
+      width: 100%;
+      padding: 12px;
+      margin-top: 10px;
+      border-radius: 8px;
+      font-size: 16px;
+      border: 1px solid #ccc;
+      background-color: var(--bg);
+      color: var(--text);
+    }
+
+    button {
+      background-color: var(--accent);
+      color: white;
+      border: none;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background-color: var(--accent-hover);
+    }
+
+    #privateKeyBox {
+      display: none;
+    }
+
+    #balance {
+      font-size: 24px;
+      font-weight: bold;
+      margin: 10px 0 20px;
+      text-align: center;
+    }
+
+    #status {
+      text-align: center;
+      margin-top: 10px;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    @media screen and (max-width: 500px) {
+      .container {
+        margin: 10px;
+        padding: 15px;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>💸 Wallet Franc Numérique</h1>
+</header>
+
+<div id="pinSetup" class="container hidden">
+  <h2>Créer un code PIN</h2>
+  <input type="password" id="newPin" maxlength="4" placeholder="Code PIN à 4 chiffres" />
+  <button onclick="savePin()">Valider</button>
+</div>
+
+<div id="pinEnter" class="container hidden">
+  <h2>Entrez votre code PIN</h2>
+  <input type="password" id="pinInput" maxlength="4" placeholder="Votre code PIN" />
+  <button onclick="verifyPin()">Déverrouiller</button>
+  <p id="pinError" style="color: red;"></p>
+</div>
+
+<div id="walletBox" class="container hidden">
+  <h2>Portefeuille personnel</h2>
+
+  <div><strong>Adresse publique</strong></div>
+  <div id="address">Chargement...</div>
+
+  <div><strong>Solde (FRN)</strong></div>
+  <div id="balance">...</div>
+
+  <button onclick="togglePrivateKey()">📥 Afficher la clé privée</button>
+  <div id="privateKeyBox">
+    <textarea id="privateKeyExport" rows="2" readonly></textarea>
+  </div>
+
+  <h3>Envoyer des FRN</h3>
+  <input id="to" placeholder="Adresse destinataire (0x...)" />
+  <input id="amount" placeholder="Montant à envoyer (ex : 10)" />
+  <button onclick="sendTokens()">🚀 Envoyer</button>
+
+  <p id="status"></p>
+</div>
+
+<script>
+  const TOKEN_ADDRESS = "0xb532DF99192C1f842d47936449Bab2ABCa4d85Ea";
+  const TOKEN_ABI = [
+    { "constant": true, "inputs": [{"name":"_owner","type":"address"}], "name": "balanceOf", "outputs": [{"name":"balance","type":"uint256"}], "type": "function" },
+    { "constant": false, "inputs": [{"name":"_to","type":"address"}, {"name":"_value","type":"uint256"}], "name": "transfer", "outputs": [{"name":"success","type":"bool"}], "type": "function" },
+    { "constant": true, "inputs": [], "name": "decimals", "outputs": [{"name":"","type":"uint8"}], "type": "function" }
+  ];
+
+  let wallet, provider, signer, token;
+
+  function openDB(callback) {
+    const request = indexedDB.open("frn_wallet_db", 1);
+    request.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains("keys")) db.createObjectStore("keys");
+    };
+    request.onsuccess = (e) => callback(e.target.result);
+  }
+
+  function checkPinSetup() {
+    openDB((db) => {
+      const tx = db.transaction("keys", "readonly");
+      const store = tx.objectStore("keys");
+      const req = store.get("pin");
+      req.onsuccess = () => {
+        if (req.result) {
+          document.getElementById("pinEnter").classList.remove("hidden");
+        } else {
+          document.getElementById("pinSetup").classList.remove("hidden");
+        }
+      };
+    });
+  }
+
+  function savePin() {
+    const pin = document.getElementById("newPin").value;
+    if (pin.length !== 4) return alert("PIN invalide");
+    openDB((db) => {
+      const tx = db.transaction("keys", "readwrite");
+      tx.objectStore("keys").put(pin, "pin");
+      tx.oncomplete = () => location.reload();
+    });
+  }
+
+  function verifyPin() {
+    const input = document.getElementById("pinInput").value;
+    openDB((db) => {
+      const tx = db.transaction("keys", "readonly");
+      tx.objectStore("keys").get("pin").onsuccess = (e) => {
+        if (e.target.result === input) {
+          document.getElementById("pinEnter").classList.add("hidden");
+          initWallet();
+        } else {
+          document.getElementById("pinError").innerText = "❌ Mauvais code PIN";
+        }
+      };
+    });
+  }
+
+  function getOrCreatePrivateKey(callback) {
+    openDB((db) => {
+      const tx = db.transaction("keys", "readonly");
+      const store = tx.objectStore("keys");
+      store.get("privateKey").onsuccess = (e) => {
+        let privateKey = e.target.result;
+        if (!privateKey) {
+          const newWallet = ethers.ethers.Wallet.createRandom();
+          privateKey = newWallet.privateKey;
+          const txw = db.transaction("keys", "readwrite");
+          txw.objectStore("keys").put(privateKey, "privateKey");
+          txw.oncomplete = () => callback(privateKey);
+        } else {
+          callback(privateKey);
+        }
+      };
+    });
+  }
+
+  async function initWallet() {
+    document.getElementById("walletBox").classList.remove("hidden");
+    provider = new ethers.ethers.providers.JsonRpcProvider("https://mainnet.xo-dex.com/rpc", { chainId: 2415 });
+
+    getOrCreatePrivateKey(async (privateKey) => {
+      wallet = new ethers.ethers.Wallet(privateKey, provider);
+      signer = wallet.connect(provider);
+      token = new ethers.ethers.Contract(TOKEN_ADDRESS, TOKEN_ABI, signer);
+
+      document.getElementById("address").innerText = wallet.address;
+      document.getElementById("privateKeyExport").value = privateKey;
+      await updateBalance();
+    });
+  }
+
+  async function updateBalance() {
+    try {
+      const decimals = await token.decimals();
+      const rawBalance = await token.balanceOf(wallet.address);
+      const balance = ethers.ethers.utils.formatUnits(rawBalance, decimals);
+      document.getElementById("balance").innerText = `${balance} FRN`;
+    } catch (err) {
+      document.getElementById("balance").innerText = "Erreur";
+    }
+  }
+
+  async function sendTokens() {
+    const to = document.getElementById("to").value.trim();
+    const amount = document.getElementById("amount").value.trim();
+    if (!to || !amount) return alert("Champs requis !");
+    try {
+      const decimals = await token.decimals();
+      const tx = await token.transfer(to, ethers.ethers.utils.parseUnits(amount, decimals));
+      document.getElementById("status").innerText = "⏳ Envoi...";
+      await tx.wait();
+      document.getElementById("status").innerText = "✅ Envoyé !";
+      await updateBalance();
+    } catch (err) {
+      document.getElementById("status").innerText = "❌ " + err.message;
+    }
+  }
+
+  function togglePrivateKey() {
+    const box = document.getElementById("privateKeyBox");
+    box.style.display = box.style.display === "none" ? "block" : "none";
+  }
+
+  checkPinSetup();
+</script>
+</body>
+</html>
